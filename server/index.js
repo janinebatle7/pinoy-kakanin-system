@@ -4,12 +4,20 @@ import mysql from 'mysql2';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import dotenv from 'dotenv';
+import path from 'path';
+import { fileURLToPath } from 'url';
 
 dotenv.config();
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const app = express();
 app.use(cors());
 app.use(express.json());
+
+// Serve static files from the React app build folder
+app.use(express.static(path.join(__dirname, '../dist')));
 
 const PORT = process.env.PORT || 5000;
 const JWT_SECRET = process.env.JWT_SECRET || 'kakanin_secret_key';
@@ -47,14 +55,18 @@ const authenticateToken = (req, res, next) => {
 // --- AUTH ROUTES ---
 
 app.post('/api/register', async (req, res) => {
-  const { username, email, password } = req.body;
-  const hashedPassword = await bcrypt.hash(password, 10);
+  try {
+    const { username, email, password } = req.body;
+    const hashedPassword = await bcrypt.hash(password, 10);
 
-  const query = 'INSERT INTO users (username, email, password) VALUES (?, ?, ?)';
-  db.query(query, [username, email, hashedPassword], (err, result) => {
-    if (err) return res.status(500).json({ error: err.message });
-    res.status(201).json({ message: 'User registered successfully' });
-  });
+    const query = 'INSERT INTO users (username, email, password) VALUES (?, ?, ?)';
+    db.query(query, [username, email, hashedPassword], (err, result) => {
+      if (err) return res.status(500).json({ error: err.message });
+      res.status(201).json({ message: 'User registered successfully' });
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
 app.post('/api/login', (req, res) => {
@@ -69,16 +81,8 @@ app.post('/api/login', (req, res) => {
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) return res.status(400).json({ message: 'Invalid credentials' });
 
-    const token = jwt.sign(
-      { id: user.id, username: user.username, role: user.role },
-      JWT_SECRET,
-      { expiresIn: '1h' }
-    );
-
-    res.json({
-      token,
-      user: { id: user.id, username: user.username, role: user.role }
-    });
+    const token = jwt.sign({ id: user.id, username: user.username, role: user.role }, JWT_SECRET, { expiresIn: '1h' });
+    res.json({ token, user: { id: user.id, username: user.username, role: user.role } });
   });
 });
 
@@ -100,46 +104,33 @@ app.post('/api/orders', authenticateToken, (req, res) => {
   db.beginTransaction((err) => {
     if (err) return res.status(500).json({ error: err.message });
 
-    db.query(
-      'INSERT INTO orders (user_id, total_amount) VALUES (?, ?)',
-      [userId, total_amount],
-      (err, result) => {
+    db.query('INSERT INTO orders (user_id, total_amount) VALUES (?, ?)', [userId, total_amount], (err, result) => {
+      if (err) {
+        return db.rollback(() => {
+          res.status(500).json({ error: err.message });
+        });
+      }
+
+      const orderId = result.insertId;
+      const orderItems = items.map(item => [orderId, item.id, item.quantity, item.price]);
+
+      db.query('INSERT INTO order_items (order_id, product_id, quantity, price_at_time) VALUES ?', [orderItems], (err) => {
         if (err) {
           return db.rollback(() => {
             res.status(500).json({ error: err.message });
           });
         }
 
-        const orderId = result.insertId;
-        const orderItems = items.map(item => [
-          orderId,
-          item.id,
-          item.quantity,
-          item.price
-        ]);
-
-        db.query(
-          'INSERT INTO order_items (order_id, product_id, quantity, price_at_time) VALUES ?',
-          [orderItems],
-          (err) => {
-            if (err) {
-              return db.rollback(() => {
-                res.status(500).json({ error: err.message });
-              });
-            }
-
-            db.commit((err) => {
-              if (err) {
-                return db.rollback(() => {
-                  res.status(500).json({ error: err.message });
-                });
-              }
-              res.json({ message: 'Order placed successfully', orderId });
+        db.commit((err) => {
+          if (err) {
+            return db.rollback(() => {
+              res.status(500).json({ error: err.message });
             });
           }
-        );
-      }
-    );
+          res.json({ message: 'Order placed successfully', orderId });
+        });
+      });
+    });
   });
 });
 
@@ -149,23 +140,18 @@ app.post('/api/reservations', authenticateToken, (req, res) => {
   const { reservation_date, reservation_time, pax, special_requests } = req.body;
   const userId = req.user.id;
 
-  const query = `
-    INSERT INTO reservations 
-    (user_id, reservation_date, reservation_time, pax, special_requests) 
-    VALUES (?, ?, ?, ?, ?)
-  `;
-
-  db.query(
-    query,
-    [userId, reservation_date, reservation_time, pax, special_requests],
-    (err, result) => {
-      if (err) return res.status(500).json({ error: err.message });
-      res.status(201).json({ message: 'Reservation created successfully' });
-    }
-  );
+  const query = 'INSERT INTO reservations (user_id, reservation_date, reservation_time, pax, special_requests) VALUES (?, ?, ?, ?, ?)';
+  db.query(query, [userId, reservation_date, reservation_time, pax, special_requests], (err, result) => {
+    if (err) return res.status(500).json({ error: err.message });
+    res.status(201).json({ message: 'Reservation created successfully' });
+  });
 });
 
-// --- START SERVER ---
+// The "catchall" handler: for any request that doesn't
+// match one above, send back React's index.html file.
+app.get('*', (req, res) => {
+  res.sendFile(path.join(__dirname, '../dist/index.html'));
+});
 
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
