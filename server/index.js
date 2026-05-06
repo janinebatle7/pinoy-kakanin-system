@@ -1,9 +1,11 @@
-const express = require('express');
-const cors = require('cors');
-const mysql = require('mysql2');
-const bcrypt = require('bcryptjs');
-const jwt = require('jsonwebtoken');
-require('dotenv').config();
+import express from 'express';
+import cors from 'cors';
+import mysql from 'mysql2';
+import bcrypt from 'bcryptjs';
+import jwt from 'jsonwebtoken';
+import dotenv from 'dotenv';
+
+dotenv.config();
 
 const app = express();
 app.use(cors());
@@ -12,7 +14,7 @@ app.use(express.json());
 const PORT = process.env.PORT || 5000;
 const JWT_SECRET = process.env.JWT_SECRET || 'kakanin_secret_key';
 
-// MySQL Connection (Using mock for now, but configured for real MySQL)
+// MySQL Connection
 const db = mysql.createConnection({
   host: process.env.DB_HOST || 'localhost',
   user: process.env.DB_USER || 'root',
@@ -23,7 +25,6 @@ const db = mysql.createConnection({
 db.connect((err) => {
   if (err) {
     console.error('Error connecting to MySQL:', err);
-    // In a production environment, we would handle this better
     return;
   }
   console.log('Connected to MySQL Database');
@@ -68,8 +69,16 @@ app.post('/api/login', (req, res) => {
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) return res.status(400).json({ message: 'Invalid credentials' });
 
-    const token = jwt.sign({ id: user.id, username: user.username, role: user.role }, JWT_SECRET, { expiresIn: '1h' });
-    res.json({ token, user: { id: user.id, username: user.username, role: user.role } });
+    const token = jwt.sign(
+      { id: user.id, username: user.username, role: user.role },
+      JWT_SECRET,
+      { expiresIn: '1h' }
+    );
+
+    res.json({
+      token,
+      user: { id: user.id, username: user.username, role: user.role }
+    });
   });
 });
 
@@ -91,33 +100,46 @@ app.post('/api/orders', authenticateToken, (req, res) => {
   db.beginTransaction((err) => {
     if (err) return res.status(500).json({ error: err.message });
 
-    db.query('INSERT INTO orders (user_id, total_amount) VALUES (?, ?)', [userId, total_amount], (err, result) => {
-      if (err) {
-        return db.rollback(() => {
-          res.status(500).json({ error: err.message });
-        });
-      }
-
-      const orderId = result.insertId;
-      const orderItems = items.map(item => [orderId, item.id, item.quantity, item.price]);
-
-      db.query('INSERT INTO order_items (order_id, product_id, quantity, price_at_time) VALUES ?', [orderItems], (err) => {
+    db.query(
+      'INSERT INTO orders (user_id, total_amount) VALUES (?, ?)',
+      [userId, total_amount],
+      (err, result) => {
         if (err) {
           return db.rollback(() => {
             res.status(500).json({ error: err.message });
           });
         }
 
-        db.commit((err) => {
-          if (err) {
-            return db.rollback(() => {
-              res.status(500).json({ error: err.message });
+        const orderId = result.insertId;
+        const orderItems = items.map(item => [
+          orderId,
+          item.id,
+          item.quantity,
+          item.price
+        ]);
+
+        db.query(
+          'INSERT INTO order_items (order_id, product_id, quantity, price_at_time) VALUES ?',
+          [orderItems],
+          (err) => {
+            if (err) {
+              return db.rollback(() => {
+                res.status(500).json({ error: err.message });
+              });
+            }
+
+            db.commit((err) => {
+              if (err) {
+                return db.rollback(() => {
+                  res.status(500).json({ error: err.message });
+                });
+              }
+              res.json({ message: 'Order placed successfully', orderId });
             });
           }
-          res.json({ message: 'Order placed successfully', orderId });
-        });
-      });
-    });
+        );
+      }
+    );
   });
 });
 
@@ -127,12 +149,23 @@ app.post('/api/reservations', authenticateToken, (req, res) => {
   const { reservation_date, reservation_time, pax, special_requests } = req.body;
   const userId = req.user.id;
 
-  const query = 'INSERT INTO reservations (user_id, reservation_date, reservation_time, pax, special_requests) VALUES (?, ?, ?, ?, ?)';
-  db.query(query, [userId, reservation_date, reservation_time, pax, special_requests], (err, result) => {
-    if (err) return res.status(500).json({ error: err.message });
-    res.status(201).json({ message: 'Reservation created successfully' });
-  });
+  const query = `
+    INSERT INTO reservations 
+    (user_id, reservation_date, reservation_time, pax, special_requests) 
+    VALUES (?, ?, ?, ?, ?)
+  `;
+
+  db.query(
+    query,
+    [userId, reservation_date, reservation_time, pax, special_requests],
+    (err, result) => {
+      if (err) return res.status(500).json({ error: err.message });
+      res.status(201).json({ message: 'Reservation created successfully' });
+    }
+  );
 });
+
+// --- START SERVER ---
 
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
